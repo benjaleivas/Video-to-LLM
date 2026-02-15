@@ -1,0 +1,32 @@
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+
+# Secrets
+.env
+*.pem
+*.key
+
+# Local media and generated artifacts (never commit)
+*.mov
+*.mp4
+*.m4v
+*.wav
+output/
+output*/
+frames/
+frames_raw/
+local_data/
+
+# Build / caches
+.cache/
+.pytest_cache/
+.mypy_cache/
