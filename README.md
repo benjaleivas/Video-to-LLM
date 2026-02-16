@@ -23,8 +23,10 @@ Copy `.env.example` values into your shell environment:
 
 ```bash
 export ASSEMBLYAI_API_KEY="..."
-export GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/to/service-account.json"
+export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
 ```
+
+`GOOGLE_APPLICATION_CREDENTIALS` can also point to a service-account JSON file, but ADC is recommended for local development.
 
 ## Usage
 
@@ -115,6 +117,7 @@ python -m videopipe \
 
 - Local mode does not send data to external APIs.
 - Cloud modes send audio and/or images to selected providers.
+- This repository is configured to keep secrets and generated outputs local (`.env*`, credential JSON files, `output*/`, media files).
 - Existing output schema is backward compatible; cloud mode adds optional fields:
   - transcript segment: `speaker`, `speaker_confidence`, `asr_provider`
   - frame OCR entry: `ocr_provider`, `provider_meta`

@@ -12,8 +12,13 @@ venv/
 
 # Secrets
 .env
+.env.*
+!.env.example
 *.pem
 *.key
+application_default_credentials.json
+*service-account*.json
+*credentials*.json
 
 # Local media and generated artifacts (never commit)
 *.mov
