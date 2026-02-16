@@ -32,10 +32,13 @@ def transcribe_audio(
             continue
         segments.append(
             {
+                "segment_id": len(segments) + 1,
                 "start": round(float(seg.start), 3),
                 "end": round(float(seg.end), 3),
                 "text": text,
                 "asr_provider": "whisper",
+                "parent_utterance_id": None,
+                "split_reason": "whisper_raw",
             }
         )
     return segments

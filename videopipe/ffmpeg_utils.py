@@ -122,3 +122,46 @@ def merge_frame_entries(scene_entries: list[dict], sample_entries: list[dict], m
             continue
         merged.append({**entry, "original_index": len(merged) + 1})
     return merged
+
+
+def extract_frames_at_timestamps(
+    video_path: Path,
+    frames_raw_dir: Path,
+    timestamps: list[float],
+    *,
+    source: str,
+    filename_prefix: str,
+) -> list[dict]:
+    ensure_dir(frames_raw_dir)
+    out: list[dict] = []
+    ordered = sorted(set(round(float(ts), 3) for ts in timestamps if float(ts) >= 0))
+    for i, ts in enumerate(ordered, start=1):
+        filename = f"{filename_prefix}_{i:06d}_{ts:010.3f}.jpg"
+        out_path = (frames_raw_dir / filename).resolve()
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-ss",
+            f"{ts:.3f}",
+            "-i",
+            str(video_path),
+            "-frames:v",
+            "1",
+            "-update",
+            "1",
+            "-q:v",
+            "2",
+            str(out_path),
+        ]
+        run_cmd(cmd)
+        if out_path.exists():
+            out.append(
+                {
+                    "timestamp": round(ts, 3),
+                    "raw_path": str(out_path),
+                    "source": source,
+                    "original_index": len(out) + 1,
+                }
+            )
+    return out

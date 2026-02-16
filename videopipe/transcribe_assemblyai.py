@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .segment import refine_segments_from_utterances
+
 
 def _to_seconds(value: Any) -> float:
     if value is None:
@@ -64,7 +66,10 @@ def transcribe_audio_assemblyai(
     language: str = "en",
     diarization: bool = True,
     speaker_label_format: str = "alpha",
-) -> tuple[list[dict], list[dict]]:
+    segment_max_seconds: float = 25.0,
+    segment_silence_gap_seconds: float = 0.6,
+    segment_min_seconds: float = 3.0,
+) -> tuple[list[dict], list[dict], list[dict]]:
     try:
         import assemblyai as aai
     except Exception as exc:  # pragma: no cover - import guard
@@ -90,7 +95,6 @@ def transcribe_audio_assemblyai(
     if error_msg:
         raise RuntimeError(f"AssemblyAI transcription failed: {error_msg}")
 
-    segments: list[dict] = []
     speaker_rows: list[dict] = []
 
     utterances = list(getattr(transcript, "utterances", None) or [])
@@ -106,18 +110,10 @@ def transcribe_audio_assemblyai(
             speaker = _normalize_speaker(getattr(utterance, "speaker", None), speaker_label_format)
             words = _extract_words(utterance)
 
-            segment = {
-                "start": start,
-                "end": end,
-                "text": text,
-                "speaker": speaker,
-                "speaker_confidence": round(float(confidence), 4) if confidence is not None else None,
-                "asr_provider": "assemblyai",
-            }
-            segments.append(segment)
             speaker_rows.append(
                 {
                     "utterance_index": idx,
+                    "utterance_id": idx,
                     "start": start,
                     "end": end,
                     "speaker": speaker,
@@ -128,19 +124,44 @@ def transcribe_audio_assemblyai(
                 }
             )
 
+    segments: list[dict] = []
+    transcript_utterances: list[dict] = []
+    if speaker_rows:
+        segments, transcript_utterances = refine_segments_from_utterances(
+            speaker_rows,
+            max_seconds=segment_max_seconds,
+            silence_gap_seconds=segment_silence_gap_seconds,
+            min_seconds=segment_min_seconds,
+        )
+
     if not segments:
         text = str(getattr(transcript, "text", "")).strip()
         audio_duration = _to_seconds(getattr(transcript, "audio_duration", 0))
         if text:
             segments.append(
                 {
+                    "segment_id": 1,
                     "start": 0.0,
                     "end": round(audio_duration, 3),
                     "text": text,
                     "speaker": None,
                     "speaker_confidence": None,
                     "asr_provider": "assemblyai",
+                    "parent_utterance_id": None,
+                    "split_reason": "global_fallback",
                 }
             )
+            transcript_utterances = [
+                {
+                    "utterance_id": 1,
+                    "start": 0.0,
+                    "end": round(audio_duration, 3),
+                    "text": text,
+                    "speaker": None,
+                    "speaker_confidence": None,
+                    "asr_provider": "assemblyai",
+                    "words": [],
+                }
+            ]
 
-    return segments, speaker_rows
+    return segments, speaker_rows, transcript_utterances

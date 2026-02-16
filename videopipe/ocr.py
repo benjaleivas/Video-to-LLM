@@ -8,8 +8,10 @@ import re
 from typing import Iterable
 
 import imagehash
+import numpy as np
 from PIL import Image
 
+from .quality import score_ocr_text
 from .utils import log
 
 
@@ -149,6 +151,7 @@ def _ocr_worker(task: dict) -> dict:
             text, avg_conf, used_psm = _ocr_best_pass(
                 crop_img, lang=lang, oem=oem, psm=psm, second_psm=second_psm
             )
+            quality = score_ocr_text(text, avg_conf)
             crop_records.append(
                 {
                     "name": crop_name,
@@ -156,6 +159,9 @@ def _ocr_worker(task: dict) -> dict:
                     "text": text,
                     "avg_conf": avg_conf,
                     "psm_used": used_psm,
+                    "quality_score": quality["quality_score"],
+                    "quality_flags": quality["quality_flags"],
+                    "quality_metrics": quality["metrics"],
                 }
             )
 
@@ -164,6 +170,7 @@ def _ocr_worker(task: dict) -> dict:
 
     valid_confs = [record["avg_conf"] for record in crop_records if record["avg_conf"] is not None]
     avg_conf = round(sum(valid_confs) / len(valid_confs), 2) if valid_confs else None
+    frame_quality = score_ocr_text(full_text, avg_conf)
 
     return {
         "timestamp": round(timestamp, 3),
@@ -180,7 +187,27 @@ def _ocr_worker(task: dict) -> dict:
             "avg_conf": avg_conf,
             "crops": crop_records,
         },
+        "quality_score": frame_quality["quality_score"],
+        "quality_flags": frame_quality["quality_flags"],
+        "quality_metrics": frame_quality["metrics"],
+        "fallback_used": False,
+        "provider_candidates": [{"provider": "tesseract", "quality_score": frame_quality["quality_score"]}],
     }
+
+
+def _image_delta_ratio(path_a: Path, path_b: Path) -> float:
+    with Image.open(path_a) as img_a, Image.open(path_b) as img_b:
+        arr_a = np.array(img_a.convert("L"), dtype=np.float32)
+        arr_b = np.array(img_b.convert("L"), dtype=np.float32)
+    if arr_a.shape != arr_b.shape:
+        h = min(arr_a.shape[0], arr_b.shape[0])
+        w = min(arr_a.shape[1], arr_b.shape[1])
+        arr_a = arr_a[:h, :w]
+        arr_b = arr_b[:h, :w]
+    if arr_a.size == 0 or arr_b.size == 0:
+        return 0.0
+    delta = np.mean(np.abs(arr_a - arr_b)) / 255.0
+    return float(delta)
 
 
 def dedupe_frames(
@@ -188,6 +215,9 @@ def dedupe_frames(
     *,
     time_gap_sec: float = 2.0,
     hamming_threshold: int = 6,
+    preserve_transitions: bool = True,
+    transition_gap_seconds: float = 2.5,
+    transition_delta_threshold: float = 0.012,
 ) -> tuple[list[dict], list[dict]]:
     kept: list[dict] = []
     dropped: list[dict] = []
@@ -215,6 +245,32 @@ def dedupe_frames(
                 break
 
         if duplicate_of is not None:
+            if preserve_transitions:
+                time_delta = ts - float(duplicate_of["timestamp"])
+                if time_delta <= transition_gap_seconds:
+                    try:
+                        delta_ratio = _image_delta_ratio(processed_path, Path(duplicate_of["processed_path"]))
+                    except Exception:
+                        delta_ratio = 0.0
+                    if delta_ratio >= transition_delta_threshold:
+                        kept_entry = {
+                            **entry,
+                            "phash": str(current_hash),
+                            "drop_blocked_reason": "transition_preserved",
+                            "duplicate_candidate": duplicate_of["processed_path"],
+                            "candidate_hash_distance": hash_distance,
+                            "candidate_delta_ratio": round(delta_ratio, 6),
+                        }
+                        kept.append(kept_entry)
+                        recent_kept.append(
+                            {
+                                "timestamp": ts,
+                                "hash": current_hash,
+                                "processed_path": entry["processed_path"],
+                            }
+                        )
+                        recent_kept = [prev for prev in recent_kept if ts - prev["timestamp"] <= time_gap_sec]
+                        continue
             dropped.append(
                 {
                     **entry,

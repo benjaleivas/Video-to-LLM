@@ -1,77 +1,130 @@
-# Video-to-LLM (Local First, Cloud Optional)
+# video-to-llm
 
-Convert a screen recording into an LLM-ingestion dataset with:
-- timestamped transcript
-- scene-change keyframes
-- OCR text from keyframes (optimized for tiny UI text)
-- alignment between transcript segments and nearest keyframes
+`video-to-llm` is a pipeline for turning **web-app screen recordings** into structured, LLM-ready data.
 
-Default mode is fully local. Optional paid providers are supported:
-- ASR + diarization: AssemblyAI
-- OCR: Google Cloud Vision
+It is optimized for analyst/product walkthrough videos where UI text is dense and small (dashboards, filters, tables, side panels), and where you need to map what was said to what was visible on screen.
 
-## Install
+## What It Produces
+
+Given one video input, it outputs:
+- clean audio (`audio.wav`)
+- transcript with timing (+ optional diarization)
+- keyframes with OCR text (including region crops)
+- transcript-to-frame alignment records
+- windowed dataset chunks for retrieval/analysis
+- quality report with explicit gate checks
+
+## Why This Is Different
+
+Compared to naive “sample every N seconds” pipelines, this uses:
+- hybrid keyframe policy: scene changes + periodic sampling + start/end anchors + max-gap fill
+- OCR quality scoring and retries for tiny UI text
+- optional cross-provider OCR fallback (Google -> Azure Read)
+- segment refinement to avoid giant transcript blocks
+- top-k alignment candidates (not just nearest single frame)
+
+## Pipeline Stages
+
+1. Audio extraction (`ffmpeg`)
+2. Frame extraction (scene + periodic + anchors + gap fill)
+3. OCR preprocessing
+4. Perceptual-hash dedupe with transition preservation
+5. Transcription (`faster-whisper` or `AssemblyAI`)
+6. OCR (`Tesseract` or `Google Vision`; optional Azure fallback)
+7. Alignment (segment -> frame candidates)
+8. Windowing
+9. Quality report + optional quality gate enforcement
+
+## Installation
 
 ```bash
 brew install ffmpeg tesseract
 python -m pip install -r requirements.txt
 ```
 
-## Environment (Optional Cloud Providers)
+## Credentials (Optional Cloud Providers)
 
-Copy `.env.example` values into your shell environment:
+Set only what you use.
 
 ```bash
+# AssemblyAI (ASR + diarization)
 export ASSEMBLYAI_API_KEY="..."
+
+# Google Vision OCR (ADC recommended)
 export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
+
+# Optional Azure OCR fallback
+export AZURE_VISION_ENDPOINT="https://<resource>.cognitiveservices.azure.com"
+export AZURE_VISION_KEY="..."
 ```
 
-`GOOGLE_APPLICATION_CREDENTIALS` can also point to a service-account JSON file, but ADC is recommended for local development.
+## Quick Start
 
-## Usage
-
-### Local default (offline)
+### Quality-first (default profile)
 
 ```bash
 python -m videopipe \
   --video ./input/video.mov \
   --out ./output \
-  --scene-threshold 0.25 \
-  --ocr-lang eng \
-  --whisper-model large-v3 \
-  --force-language en
-```
-
-### Cloud quality stack (AssemblyAI + Google OCR)
-
-```bash
-python -m videopipe \
-  --video ./input/video.mov \
-  --out ./output \
+  --profile quality_first \
+  --frame-policy hybrid \
+  --periodic-interval-seconds 15 \
+  --max-frame-gap-seconds 15 \
   --transcribe-provider assemblyai \
-  --assembly-diarization true \
-  --assembly-speaker-label-format alpha \
   --ocr-provider google \
+  --ocr-fallback-provider azure \
   --google-ocr-feature document_text_detection \
-  --force-language en
+  --force-language en \
+  --enforce-quality true
 ```
 
-### Smoke test (first 60 seconds)
+### Local-safe (offline stack)
+
+```bash
+python -m videopipe \
+  --video ./input/video.mov \
+  --out ./output \
+  --profile local_safe \
+  --transcribe-provider whisper \
+  --ocr-provider tesseract
+```
+
+### Smoke test
 
 ```bash
 python -m videopipe --video ./input/video.mov --max-seconds 60
 ```
 
+## Optional Interaction Sidecar
+
+Pass `--events-log` to include click/scroll/key events in windows.
+
+Supported formats: `.jsonl`, `.json`, `.csv`, `.tsv`
+
+Minimum event fields:
+- timestamp (`ts` or `timestamp`) in seconds from recording start
+- event type (`click`, `scroll`, `key`)
+
+Example JSONL:
+
+```json
+{"ts": 12.3, "event": "click", "payload": {"x": 811, "y": 412, "button": "left"}}
+{"ts": 14.0, "event": "scroll", "payload": {"dy": -380}}
+{"ts": 16.2, "event": "key", "payload": {"key": "Enter"}}
+```
+
 ## Output Layout
 
-For input `./input/video.mov`, outputs are created under:
+For `./input/video.mov`:
 
 ```text
 ./output/video/
   audio.wav
   transcript.json
+  transcript_utterances.json
   transcript.srt
   speakers.json
+  events.json                  # when --events-log is provided
   frames_raw/
   frames/
   frames_index.json
@@ -80,45 +133,53 @@ For input `./input/video.mov`, outputs are created under:
   frames_ocr.json
   dataset.json
   dataset_windows.json
+  quality_report.json
 ```
 
-## OCR for Tiny Dashboard Text
+## Key Schema Additions
 
-Useful defaults:
-- `--ocr-scale 2.0` (raise to `2.5` for very tiny text)
-- `--ocr-threshold adaptive`
-- `--ocr-denoise true`
-- `--ocr-sharpen true`
-- `--ocr-crops preset` (full + top + left + main + bottom)
+`frames_ocr.json` adds:
+- `quality_score`, `quality_flags`, `quality_metrics`
+- `fallback_used`, `provider_candidates`
 
-Manual crop override:
+`dataset.json` adds:
+- `frame_candidates`, `frame_prev`, `frame_next`
+- `attach_score`, `attach_reason`
+- `segment_id`, `parent_utterance_id`, `split_reason`
 
-```bash
-python -m videopipe \
-  --video ./input/video.mov \
-  --ocr-crop "0,0,1600,220" \
-  --ocr-crop "0,220,500,1200"
-```
+`quality_report.json` includes:
+- frame coverage (`max_gap_sec`, `tail_gap_sec`)
+- transcript segmentation (`p95_segment_duration_sec`)
+- alignment attach rate
+- OCR non-empty/low-quality/provider-error metrics
+- quality gate pass/fail results
 
-## Important CLI Flags
+## Important Flags
 
-- `--transcribe-provider` (`whisper|assemblyai`, default `whisper`)
-- `--ocr-provider` (`tesseract|google`, default `tesseract`)
-- `--assembly-diarization` (`true|false`, default `true`)
-- `--assembly-speaker-label-format` (`alpha|numeric`, default `alpha`)
-- `--google-ocr-feature` (`text_detection|document_text_detection`, default `document_text_detection`)
-- `--google-timeout-seconds` (default `30`)
-- `--google-max-concurrency` (default `4`)
-- `--scene-threshold` (default `0.25`)
-- `--align-max-gap` (default `10`)
-- `--max-seconds` / `--max-minutes` for smoke tests
+- `--profile {local_safe,quality_first}`
+- `--frame-policy {scene_only,hybrid}`
+- `--periodic-interval-seconds 15`
+- `--max-frame-gap-seconds 15`
+- `--always-include-start-end true`
+- `--dedupe-preserve-transitions true`
+- `--segment-max-seconds 25`
+- `--segment-silence-gap-seconds 0.6`
+- `--segment-min-seconds 3`
+- `--align-mode {nearest,overlap_topk}`
+- `--align-topk 3`
+- `--ocr-quality-threshold 0.55`
+- `--ocr-fallback-provider {none,azure}`
+- `--events-log /path/to/events.jsonl`
+- `--enforce-quality true`
 
-## Notes
+## Privacy and Security
 
-- Local mode does not send data to external APIs.
-- Cloud modes send audio and/or images to selected providers.
-- This repository is configured to keep secrets and generated outputs local (`.env*`, credential JSON files, `output*/`, media files).
-- Existing output schema is backward compatible; cloud mode adds optional fields:
-  - transcript segment: `speaker`, `speaker_confidence`, `asr_provider`
-  - frame OCR entry: `ocr_provider`, `provider_meta`
-  - dataset record: `seg_speaker`, `asr_provider`, `ocr_provider`
+- Local mode keeps processing fully offline.
+- Cloud mode sends audio/images only to providers you enabled.
+- API keys are read from environment variables.
+- Do **not** commit keys, `.env` files, or credential JSON files.
+- Repo ignore rules already exclude local outputs and secret files.
+
+## Current Scope
+
+Optimized for macOS + Apple Silicon (Python 3.10+), especially screen recordings of web applications where OCR and temporal alignment quality matter.

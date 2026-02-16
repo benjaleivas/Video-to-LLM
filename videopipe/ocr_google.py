@@ -8,6 +8,9 @@ from typing import Any
 from PIL import Image
 
 from .ocr import OcrOptions, build_crop_boxes
+from .ocr_azure import ocr_crop_azure_read
+from .preprocess import build_google_crop_variants
+from .quality import score_ocr_text
 from .utils import log
 
 
@@ -119,53 +122,173 @@ def _ocr_crop_google(
         return "", None, str(exc)
 
 
+def _pick_best_candidate(candidates: list[dict]) -> dict:
+    scored = sorted(
+        candidates,
+        key=lambda item: (
+            float(item.get("quality_score") or 0.0),
+            len(str(item.get("text") or "")),
+            float(item.get("avg_conf") or 0.0),
+        ),
+        reverse=True,
+    )
+    return scored[0]
+
+
+def _build_crop_record(
+    *,
+    crop_name: str,
+    box: tuple[int, int, int, int],
+    candidates: list[dict],
+    selected: dict,
+    fallback_used: bool,
+) -> dict:
+    return {
+        "name": crop_name,
+        "box": {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]},
+        "text": selected.get("text") or "",
+        "avg_conf": selected.get("avg_conf"),
+        "psm_used": None,
+        "error": selected.get("error"),
+        "quality_score": selected.get("quality_score"),
+        "quality_flags": selected.get("quality_flags") or [],
+        "quality_metrics": selected.get("quality_metrics") or {},
+        "fallback_used": bool(fallback_used),
+        "provider_candidates": candidates,
+    }
+
+
 def _ocr_worker(task: dict) -> dict:
     from google.cloud import vision
 
     frame_path = Path(task["frame_path"])
+    raw_path = Path(task.get("raw_path") or frame_path)
     timestamp = float(task["timestamp"])
     feature = task["feature"]
     timeout_seconds = float(task["timeout_seconds"])
     language_hints = task["language_hints"]
     options: OcrOptions = task["options"]
+    quality_threshold = float(task.get("quality_threshold", 0.55))
+    fallback_provider = str(task.get("fallback_provider") or "none")
 
     client = vision.ImageAnnotatorClient()
 
-    with Image.open(frame_path) as img:
-        image = img.convert("L")
-        crops = build_crop_boxes(image.width, image.height, crops_mode=options.crops_mode, manual_crops=options.manual_crops)
+    base_img_path = raw_path if raw_path.exists() else frame_path
+    with Image.open(base_img_path) as img:
+        image = img.convert("RGB")
+        crops = build_crop_boxes(
+            image.width,
+            image.height,
+            crops_mode=options.crops_mode,
+            manual_crops=options.manual_crops,
+        )
 
         crop_records: list[dict] = []
         errors: list[dict] = []
+        frame_candidates: list[dict] = []
+        fallback_count = 0
+
         for crop_name, box in crops:
             crop_img = image.crop(box)
-            text, avg_conf, error = _ocr_crop_google(
+            variants = build_google_crop_variants(crop_img)
+
+            candidates: list[dict] = []
+
+            # Pass 1: Google variant A
+            text_a, conf_a, err_a = _ocr_crop_google(
                 client=client,
-                crop_img=crop_img,
+                crop_img=variants["google_a"],
                 feature=feature,
                 timeout_seconds=timeout_seconds,
                 language_hints=language_hints,
             )
-            if error:
-                errors.append({"crop": crop_name, "error": error})
+            score_a = score_ocr_text(text_a, conf_a)
+            cand_a = {
+                "provider": "google",
+                "variant": "google_a",
+                "text": text_a,
+                "avg_conf": conf_a,
+                "error": err_a,
+                "quality_score": score_a["quality_score"],
+                "quality_flags": score_a["quality_flags"],
+                "quality_metrics": score_a["metrics"],
+            }
+            candidates.append(cand_a)
 
-            crop_records.append(
-                {
-                    "name": crop_name,
-                    "box": {"x1": box[0], "y1": box[1], "x2": box[2], "y2": box[3]},
-                    "text": text,
-                    "avg_conf": avg_conf,
-                    "psm_used": None,
-                    "error": error,
+            best = cand_a
+
+            # Pass 2: Google variant B if low quality or provider error.
+            if err_a or float(cand_a["quality_score"]) < quality_threshold:
+                text_b, conf_b, err_b = _ocr_crop_google(
+                    client=client,
+                    crop_img=variants["google_b"],
+                    feature=feature,
+                    timeout_seconds=timeout_seconds,
+                    language_hints=language_hints,
+                )
+                score_b = score_ocr_text(text_b, conf_b)
+                cand_b = {
+                    "provider": "google",
+                    "variant": "google_b",
+                    "text": text_b,
+                    "avg_conf": conf_b,
+                    "error": err_b,
+                    "quality_score": score_b["quality_score"],
+                    "quality_flags": score_b["quality_flags"],
+                    "quality_metrics": score_b["metrics"],
                 }
+                candidates.append(cand_b)
+                best = _pick_best_candidate(candidates)
+
+            used_fallback = False
+            # Fallback provider for low quality crops.
+            if (
+                fallback_provider == "azure"
+                and (float(best.get("quality_score") or 0.0) < quality_threshold or bool(best.get("error")))
+            ):
+                text_z, conf_z, err_z, meta_z = ocr_crop_azure_read(
+                    variants["google_b"],
+                    timeout_seconds=timeout_seconds,
+                )
+                score_z = score_ocr_text(text_z, conf_z)
+                cand_z = {
+                    "provider": "azure",
+                    "variant": "azure_read",
+                    "text": text_z,
+                    "avg_conf": conf_z,
+                    "error": err_z,
+                    "quality_score": score_z["quality_score"],
+                    "quality_flags": score_z["quality_flags"],
+                    "quality_metrics": score_z["metrics"],
+                    "meta": meta_z,
+                }
+                candidates.append(cand_z)
+                best = _pick_best_candidate(candidates)
+                used_fallback = best.get("provider") == "azure"
+                if used_fallback:
+                    fallback_count += 1
+
+            if best.get("error"):
+                errors.append({"crop": crop_name, "error": best["error"]})
+
+            frame_candidates.extend(candidates)
+            crop_records.append(
+                _build_crop_record(
+                    crop_name=crop_name,
+                    box=box,
+                    candidates=candidates,
+                    selected=best,
+                    fallback_used=used_fallback,
+                )
             )
 
     parts = [f"[{record['name']}]\n{record['text']}" for record in crop_records if record["text"]]
     full_text = "\n\n".join(parts).strip()
     valid_confs = [record["avg_conf"] for record in crop_records if record.get("avg_conf") is not None]
     avg_conf = round(sum(valid_confs) / len(valid_confs), 2) if valid_confs else None
+    frame_quality = score_ocr_text(full_text, avg_conf)
 
-    return {
+    out = {
         "timestamp": round(timestamp, 3),
         "frame_path": str(frame_path.resolve()),
         "ocr_provider": "google",
@@ -174,13 +297,21 @@ def _ocr_worker(task: dict) -> dict:
             "language_hints": language_hints,
             "timeout_seconds": timeout_seconds,
             "errors": errors,
+            "per_crop_errors": {item["crop"]: item["error"] for item in errors},
+            "fallback_provider": fallback_provider,
         },
         "ocr": {
             "full_text": full_text,
             "avg_conf": avg_conf,
             "crops": crop_records,
         },
+        "quality_score": frame_quality["quality_score"],
+        "quality_flags": frame_quality["quality_flags"],
+        "quality_metrics": frame_quality["metrics"],
+        "fallback_used": fallback_count > 0,
+        "provider_candidates": frame_candidates,
     }
+    return out
 
 
 def ocr_frames_google(
@@ -190,12 +321,16 @@ def ocr_frames_google(
     feature: str = "document_text_detection",
     timeout_seconds: float = 30.0,
     max_concurrency: int = 4,
+    quality_threshold: float = 0.55,
+    fallback_provider: str = "none",
 ) -> list[dict]:
     if not frame_entries:
         return []
 
     if feature not in {"document_text_detection", "text_detection"}:
         raise ValueError("feature must be one of: document_text_detection, text_detection")
+    if fallback_provider not in {"none", "azure"}:
+        raise ValueError("fallback_provider must be one of: none, azure")
 
     workers = max(1, int(max_concurrency))
     language_hints = _lang_hints(options.lang)
@@ -204,10 +339,13 @@ def ocr_frames_google(
         {
             "timestamp": float(entry["timestamp"]),
             "frame_path": entry["processed_path"],
+            "raw_path": entry.get("raw_path"),
             "feature": feature,
             "timeout_seconds": timeout_seconds,
             "language_hints": language_hints,
             "options": options,
+            "quality_threshold": quality_threshold,
+            "fallback_provider": fallback_provider,
         }
         for entry in frame_entries
     ]
