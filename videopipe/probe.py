@@ -19,6 +19,7 @@ from .utils import (
     format_duration,
     log,
     log_verbose,
+    log_warning,
     run_cmd,
 )
 
@@ -51,7 +52,7 @@ def ffprobe_video_info(video_path: Path) -> dict:
         "csv=p=0:s=,",
         str(video_path),
     ]
-    result = run_cmd(cmd, capture_output=True, check=False)
+    result = run_cmd(cmd, check=False)
     parts = (result.stdout or "").strip().split(",")
 
     width, height, fps = 1920, 1080, 30.0
@@ -88,7 +89,7 @@ def ffprobe_video_info(video_path: Path) -> dict:
         "csv=p=0",
         str(video_path),
     ]
-    audio_result = run_cmd(audio_cmd, capture_output=True, check=False)
+    audio_result = run_cmd(audio_cmd, check=False)
     has_audio = bool((audio_result.stdout or "").strip())
 
     return {"width": width, "height": height, "fps": fps, "has_audio": has_audio}
@@ -140,6 +141,7 @@ def _probe_text_density(
             continue
 
     if count == 0:
+        log_warning("Probe: OCR failed on all sampled frames, using defaults")
         return 200.0, 70.0
 
     return total_len / count, total_conf / count

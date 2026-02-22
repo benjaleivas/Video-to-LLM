@@ -8,7 +8,9 @@ from .utils import ensure_dir, log, run_cmd
 PTS_TIME_RE = re.compile(r"pts_time:([0-9eE+\-.]+)")
 
 
-def extract_audio(video_path: Path, audio_out: Path, max_seconds: float | None = None) -> None:
+def extract_audio(
+    video_path: Path, audio_out: Path, max_seconds: float | None = None
+) -> None:
     ensure_dir(audio_out.parent)
     cmd = ["ffmpeg", "-hide_banner", "-y", "-i", str(video_path)]
     if max_seconds is not None:
@@ -52,7 +54,7 @@ def extract_scene_frames(
             str(out_pattern),
         ]
     )
-    result = run_cmd(cmd, capture_output=True)
+    result = run_cmd(cmd)
     timestamps = _parse_pts_times(result.stderr or "")
     files = sorted(frames_raw_dir.glob("frame_*.jpg"))
 
@@ -115,9 +117,13 @@ def extract_sample_frames(
     return entries
 
 
-def merge_frame_entries(scene_entries: list[dict], sample_entries: list[dict], min_gap: float = 0.05) -> list[dict]:
+def merge_frame_entries(
+    scene_entries: list[dict], sample_entries: list[dict], min_gap: float = 0.05
+) -> list[dict]:
     merged: list[dict] = []
-    for entry in sorted(scene_entries + sample_entries, key=lambda item: item["timestamp"]):
+    for entry in sorted(
+        scene_entries + sample_entries, key=lambda item: item["timestamp"]
+    ):
         if merged and abs(entry["timestamp"] - merged[-1]["timestamp"]) < min_gap:
             continue
         merged.append({**entry, "original_index": len(merged) + 1})

@@ -84,13 +84,12 @@ def ensure_dir(path: Path) -> None:
 def run_cmd(
     cmd: list[str],
     *,
-    capture_output: bool = False,
     check: bool = True,
     cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     log_verbose(f"$ {shlex.join(cmd)}")
-    # Always capture to prevent subprocess output leaking to terminal.
-    # Callers that need stdout/stderr still get it via result.
+    # Always capture to prevent subprocess output (e.g. ffmpeg progress)
+    # from leaking to terminal. Callers get stdout/stderr via result.
     result = subprocess.run(
         cmd,
         text=True,
@@ -130,7 +129,7 @@ def ffprobe_duration_seconds(video_path: Path) -> float:
         "default=noprint_wrappers=1:nokey=1",
         str(video_path),
     ]
-    result = run_cmd(cmd, capture_output=True)
+    result = run_cmd(cmd)
     value = (result.stdout or "").strip()
     try:
         return float(value)
