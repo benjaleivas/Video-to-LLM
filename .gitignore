@@ -35,3 +35,6 @@ local_data/
 .cache/
 .pytest_cache/
 .mypy_cache/
+*.egg-info/
+dist/
+build/
