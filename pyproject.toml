@@ -15,6 +15,7 @@ dependencies = [
     "google-cloud-vision>=3.7.2",
     "assemblyai>=0.37.0",
     "requests>=2.32.3",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.scripts]
