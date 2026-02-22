@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
-from .utils import ensure_dir, format_seconds_for_filename, log
+from .utils import ensure_dir, format_seconds_for_filename, make_progress
 
 
 @dataclass
@@ -45,14 +45,18 @@ def _preprocess_array_for_threshold(
 ) -> np.ndarray:
     work = gray_array
     if sharpen:
-        sharpen_kernel = np.array([[0, -1, 0], [-1, 5.2, -1], [0, -1, 0]], dtype=np.float32)
+        sharpen_kernel = np.array(
+            [[0, -1, 0], [-1, 5.2, -1], [0, -1, 0]], dtype=np.float32
+        )
         work = cv2.filter2D(work, -1, sharpen_kernel)
     if denoise:
         work = cv2.medianBlur(work, 3)
     return work
 
 
-def preprocess_image(raw_path: Path, processed_path: Path, options: PreprocessOptions) -> None:
+def preprocess_image(
+    raw_path: Path, processed_path: Path, options: PreprocessOptions
+) -> None:
     image = Image.open(raw_path).convert("RGB")
 
     if options.scale and options.scale > 0 and abs(options.scale - 1.0) > 1e-6:
@@ -69,13 +73,17 @@ def preprocess_image(raw_path: Path, processed_path: Path, options: PreprocessOp
         gray = gray.filter(ImageFilter.UnsharpMask(radius=2, percent=175, threshold=3))
 
     gray_array = np.array(gray)
-    gray_array = _preprocess_array_for_threshold(gray_array, denoise=options.denoise, sharpen=False)
+    gray_array = _preprocess_array_for_threshold(
+        gray_array, denoise=options.denoise, sharpen=False
+    )
     out_array = _threshold_array(gray_array, options.threshold)
     out_img = Image.fromarray(out_array)
 
     ext = options.image_format.lower()
     if ext in {"jpg", "jpeg"}:
-        out_img.convert("L").save(processed_path, format="JPEG", quality=95, optimize=True)
+        out_img.convert("L").save(
+            processed_path, format="JPEG", quality=95, optimize=True
+        )
     elif ext == "png":
         out_img.save(processed_path, format="PNG", optimize=True)
     else:
@@ -87,7 +95,9 @@ def build_google_crop_variants(crop_img: Image.Image) -> dict[str, Image.Image]:
 
     # Variant A: color-preserving OCR-friendly image.
     variant_a = ImageOps.autocontrast(base, cutoff=1)
-    variant_a = variant_a.filter(ImageFilter.UnsharpMask(radius=1.8, percent=150, threshold=2))
+    variant_a = variant_a.filter(
+        ImageFilter.UnsharpMask(radius=1.8, percent=150, threshold=2)
+    )
 
     # Variant B: aggressive adaptive threshold for tiny text.
     gray = ImageOps.grayscale(base)
@@ -116,17 +126,19 @@ def preprocess_frames(
     total = len(frame_entries)
     out_entries: list[dict] = []
 
-    for i, entry in enumerate(sorted(frame_entries, key=lambda item: item["timestamp"]), start=1):
-        ts = float(entry["timestamp"])
-        ext = options.image_format.lower()
-        if ext == "jpeg":
-            ext = "jpg"
-        filename = f"frame_{format_seconds_for_filename(ts)}.{ext}"
-        processed_path = (frames_out_dir / filename).resolve()
-        preprocess_image(Path(entry["raw_path"]), processed_path, options)
+    sorted_entries = sorted(frame_entries, key=lambda item: item["timestamp"])
 
-        if i % 10 == 0 or i == total:
-            log(f"Preprocess progress: {i}/{total}")
+    with make_progress("Preprocessing") as progress:
+        task = progress.add_task("preprocess", total=total)
+        for entry in sorted_entries:
+            ts = float(entry["timestamp"])
+            ext = options.image_format.lower()
+            if ext == "jpeg":
+                ext = "jpg"
+            filename = f"frame_{format_seconds_for_filename(ts)}.{ext}"
+            processed_path = (frames_out_dir / filename).resolve()
+            preprocess_image(Path(entry["raw_path"]), processed_path, options)
+            out_entries.append({**entry, "processed_path": str(processed_path)})
+            progress.advance(task)
 
-        out_entries.append({**entry, "processed_path": str(processed_path)})
     return out_entries

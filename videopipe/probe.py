@@ -13,7 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ffmpeg_utils import extract_sample_frames, extract_scene_frames
-from .utils import check_binaries, ffprobe_duration_seconds, log, run_cmd
+from .utils import (
+    check_binaries,
+    ffprobe_duration_seconds,
+    format_duration,
+    log,
+    log_verbose,
+    run_cmd,
+)
 
 
 @dataclass
@@ -140,7 +147,6 @@ def _probe_text_density(
 
 def probe_video(video_path: Path) -> ProbeResult:
     """Analyze video characteristics. Takes ~30-60 seconds."""
-    log("Probe: starting video analysis")
     check_binaries(["ffmpeg", "ffprobe"])
 
     # Step 1: metadata
@@ -151,8 +157,8 @@ def probe_video(video_path: Path) -> ProbeResult:
         )
     info = ffprobe_video_info(video_path)
     log(
-        f"Probe: {info['width']}x{info['height']} @ {info['fps']:.1f}fps, "
-        f"duration={duration:.1f}s, audio={'yes' if info['has_audio'] else 'no'}"
+        f"{info['width']}x{info['height']} @ {info['fps']:.1f}fps, "
+        f"{format_duration(duration)}, audio {'detected' if info['has_audio'] else 'not found'}"
     )
 
     tmpdir = Path(tempfile.mkdtemp(prefix="videopipe_probe_"))
@@ -165,7 +171,7 @@ def probe_video(video_path: Path) -> ProbeResult:
             sample_dir,
             sample_interval=sample_interval,
         )
-        log(
+        log_verbose(
             f"Probe: sampled {len(sample_entries)} frames (interval={sample_interval:.1f}s)"
         )
 
@@ -178,14 +184,12 @@ def probe_video(video_path: Path) -> ProbeResult:
         )
         duration_minutes = max(duration / 60.0, 0.01)
         scene_changes_per_minute = len(scene_entries) / duration_minutes
-        log(
-            f"Probe: {len(scene_entries)} scene changes ({scene_changes_per_minute:.1f}/min)"
-        )
 
         # Step 4: text density on ~5 frames
         avg_text_len, avg_conf = _probe_text_density(sample_entries, max_frames=5)
         log(
-            f"Probe: avg text length={avg_text_len:.0f} chars, avg confidence={avg_conf:.0f}"
+            f"{len(sample_entries)} samples, {len(scene_entries)} scene changes "
+            f"({scene_changes_per_minute:.1f}/min), text: {avg_text_len:.0f} chars avg"
         )
 
     finally:

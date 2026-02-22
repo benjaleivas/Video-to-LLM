@@ -11,7 +11,7 @@ from .ocr import OcrOptions, build_crop_boxes
 from .ocr_azure import ocr_crop_azure_read
 from .preprocess import build_google_crop_variants
 from .quality import score_ocr_text
-from .utils import log
+from .utils import log_verbose, make_progress
 
 
 def _lang_hints(lang: str) -> list[str] | None:
@@ -41,31 +41,45 @@ def _collect_confidences(annotation: Any) -> list[float]:
     for page in pages:
         page_conf = getattr(page, "confidence", None)
         if isinstance(page_conf, (int, float)) and page_conf >= 0:
-            confs.append(float(page_conf) * 100.0 if page_conf <= 1 else float(page_conf))
+            confs.append(
+                float(page_conf) * 100.0 if page_conf <= 1 else float(page_conf)
+            )
 
         blocks = getattr(page, "blocks", None) or []
         for block in blocks:
             block_conf = getattr(block, "confidence", None)
             if isinstance(block_conf, (int, float)) and block_conf >= 0:
-                confs.append(float(block_conf) * 100.0 if block_conf <= 1 else float(block_conf))
+                confs.append(
+                    float(block_conf) * 100.0 if block_conf <= 1 else float(block_conf)
+                )
 
             paragraphs = getattr(block, "paragraphs", None) or []
             for para in paragraphs:
                 para_conf = getattr(para, "confidence", None)
                 if isinstance(para_conf, (int, float)) and para_conf >= 0:
-                    confs.append(float(para_conf) * 100.0 if para_conf <= 1 else float(para_conf))
+                    confs.append(
+                        float(para_conf) * 100.0 if para_conf <= 1 else float(para_conf)
+                    )
 
                 words = getattr(para, "words", None) or []
                 for word in words:
                     word_conf = getattr(word, "confidence", None)
                     if isinstance(word_conf, (int, float)) and word_conf >= 0:
-                        confs.append(float(word_conf) * 100.0 if word_conf <= 1 else float(word_conf))
+                        confs.append(
+                            float(word_conf) * 100.0
+                            if word_conf <= 1
+                            else float(word_conf)
+                        )
 
                     symbols = getattr(word, "symbols", None) or []
                     for symbol in symbols:
                         sym_conf = getattr(symbol, "confidence", None)
                         if isinstance(sym_conf, (int, float)) and sym_conf >= 0:
-                            confs.append(float(sym_conf) * 100.0 if sym_conf <= 1 else float(sym_conf))
+                            confs.append(
+                                float(sym_conf) * 100.0
+                                if sym_conf <= 1
+                                else float(sym_conf)
+                            )
     return confs
 
 
@@ -83,7 +97,9 @@ def _ocr_crop_google(
         content = buf.getvalue()
 
     image = vision.Image(content=content)
-    image_context = vision.ImageContext(language_hints=language_hints) if language_hints else None
+    image_context = (
+        vision.ImageContext(language_hints=language_hints) if language_hints else None
+    )
 
     try:
         if feature == "document_text_detection":
@@ -123,16 +139,14 @@ def _ocr_crop_google(
 
 
 def _pick_best_candidate(candidates: list[dict]) -> dict:
-    scored = sorted(
+    return max(
         candidates,
         key=lambda item: (
             float(item.get("quality_score") or 0.0),
             len(str(item.get("text") or "")),
             float(item.get("avg_conf") or 0.0),
         ),
-        reverse=True,
     )
-    return scored[0]
 
 
 def _build_crop_record(
@@ -242,9 +256,9 @@ def _ocr_worker(task: dict) -> dict:
 
             used_fallback = False
             # Fallback provider for low quality crops.
-            if (
-                fallback_provider == "azure"
-                and (float(best.get("quality_score") or 0.0) < quality_threshold or bool(best.get("error")))
+            if fallback_provider == "azure" and (
+                float(best.get("quality_score") or 0.0) < quality_threshold
+                or best.get("error")
             ):
                 text_z, conf_z, err_z, meta_z = ocr_crop_azure_read(
                     variants["google_b"],
@@ -282,9 +296,17 @@ def _ocr_worker(task: dict) -> dict:
                 )
             )
 
-    parts = [f"[{record['name']}]\n{record['text']}" for record in crop_records if record["text"]]
+    parts = [
+        f"[{record['name']}]\n{record['text']}"
+        for record in crop_records
+        if record["text"]
+    ]
     full_text = "\n\n".join(parts).strip()
-    valid_confs = [record["avg_conf"] for record in crop_records if record.get("avg_conf") is not None]
+    valid_confs = [
+        record["avg_conf"]
+        for record in crop_records
+        if record.get("avg_conf") is not None
+    ]
     avg_conf = round(sum(valid_confs) / len(valid_confs), 2) if valid_confs else None
     frame_quality = score_ocr_text(full_text, avg_conf)
 
@@ -328,7 +350,9 @@ def ocr_frames_google(
         return []
 
     if feature not in {"document_text_detection", "text_detection"}:
-        raise ValueError("feature must be one of: document_text_detection, text_detection")
+        raise ValueError(
+            "feature must be one of: document_text_detection, text_detection"
+        )
     if fallback_provider not in {"none", "azure"}:
         raise ValueError("fallback_provider must be one of: none, azure")
 
@@ -351,22 +375,23 @@ def ocr_frames_google(
     ]
 
     total = len(tasks)
-    log(f"Running Google OCR on {total} frames with {workers} worker(s).")
+    log_verbose(f"Running Google OCR on {total} frames with {workers} worker(s).")
 
-    if workers == 1:
-        out: list[dict] = []
-        for i, task in enumerate(tasks, start=1):
-            out.append(_ocr_worker(task))
-            if i % 5 == 0 or i == total:
-                log(f"Google OCR progress: {i}/{total}")
-        return sorted(out, key=lambda item: item["timestamp"])
-
+    fallback_label = f" + {fallback_provider}" if fallback_provider != "none" else ""
     out: list[dict] = []
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [executor.submit(_ocr_worker, task) for task in tasks]
-        for i, future in enumerate(as_completed(futures), start=1):
-            out.append(future.result())
-            if i % 5 == 0 or i == total:
-                log(f"Google OCR progress: {i}/{total}")
+
+    with make_progress(f"OCR (Google{fallback_label})") as progress:
+        bar = progress.add_task("ocr", total=total)
+
+        if workers == 1:
+            for task in tasks:
+                out.append(_ocr_worker(task))
+                progress.advance(bar)
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(_ocr_worker, task) for task in tasks]
+                for future in as_completed(futures):
+                    out.append(future.result())
+                    progress.advance(bar)
 
     return sorted(out, key=lambda item: item["timestamp"])
