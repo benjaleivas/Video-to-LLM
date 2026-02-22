@@ -89,10 +89,12 @@ def run_cmd(
     cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     log_verbose(f"$ {shlex.join(cmd)}")
+    # Always capture to prevent subprocess output leaking to terminal.
+    # Callers that need stdout/stderr still get it via result.
     result = subprocess.run(
         cmd,
         text=True,
-        capture_output=capture_output,
+        capture_output=True,
         cwd=str(cwd) if cwd else None,
     )
     if check and result.returncode != 0:
