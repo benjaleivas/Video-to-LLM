@@ -17,9 +17,13 @@ from .utils import log
 def _ping_google_vision() -> bool:
     """Send a tiny test image to Google Vision to verify credentials and API access.
 
-    Returns True if the API responds successfully, False on any error
-    (expired tokens, missing quota project, disabled API, etc.).
+    Returns True if the API is reachable with valid auth. We send a 1x1 PNG
+    which may trigger INVALID_ARGUMENT (code 3) — that's fine, it means auth
+    and billing worked. Only fail on auth/permission/service errors.
     """
+    # gRPC codes that mean "API is reachable, just didn't like our input"
+    _OK_CODES = {0, 3}  # OK, INVALID_ARGUMENT
+
     try:
         import warnings
 
@@ -38,10 +42,10 @@ def _ping_google_vision() -> bool:
                 )
             )
             resp = client.text_detection(image=image, timeout=10)
-        if resp.error.message:
-            log(f"Tuner: Google Vision ping failed: {resp.error.message[:120]}")
-            return False
-        return True
+        if resp.error.code in _OK_CODES:
+            return True
+        log(f"Tuner: Google Vision ping failed: {resp.error.message[:120]}")
+        return False
     except Exception as exc:
         log(f"Tuner: Google Vision ping failed: {str(exc)[:120]}")
         return False
