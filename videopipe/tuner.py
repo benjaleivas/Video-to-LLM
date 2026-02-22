@@ -58,10 +58,17 @@ def _detect_providers() -> dict[str, str]:
     to catch expired tokens, missing quota projects, and disabled APIs early.
     """
     # Load .env if present (won't override existing env vars)
+    # Search order: cwd upward, then package directory upward
     try:
         from dotenv import find_dotenv, load_dotenv
 
         dotenv_path = find_dotenv(usecwd=True)
+        if not dotenv_path:
+            # Fallback: look for .env next to the package directory itself
+            # (handles running `videopipe` from outside the project tree)
+            pkg_env = Path(__file__).resolve().parent.parent / ".env"
+            if pkg_env.is_file():
+                dotenv_path = str(pkg_env)
         if dotenv_path:
             load_dotenv(dotenv_path)
             log(f"Tuner: loaded .env from {dotenv_path}")
