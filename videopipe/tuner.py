@@ -14,20 +14,67 @@ from .probe import ProbeResult
 from .utils import log
 
 
+def _ping_google_vision() -> bool:
+    """Send a tiny test image to Google Vision to verify credentials and API access.
+
+    Returns True if the API responds successfully, False on any error
+    (expired tokens, missing quota project, disabled API, etc.).
+    """
+    try:
+        import warnings
+
+        from google.cloud import vision
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*end user credentials.*")
+            client = vision.ImageAnnotatorClient()
+            # 1x1 white PNG — minimal payload to validate auth + API access
+            image = vision.Image(
+                content=(
+                    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+                    b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00"
+                    b"\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00"
+                    b"\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+                )
+            )
+            resp = client.text_detection(image=image, timeout=10)
+        if resp.error.message:
+            log(f"Tuner: Google Vision ping failed: {resp.error.message[:120]}")
+            return False
+        return True
+    except Exception as exc:
+        log(f"Tuner: Google Vision ping failed: {str(exc)[:120]}")
+        return False
+
+
 def _detect_providers() -> dict[str, str]:
-    """Check which cloud API keys are available and pick the best stack."""
+    """Check which cloud API keys are available and pick the best stack.
+
+    For Google Vision, goes beyond file-exists check: sends a real API ping
+    to catch expired tokens, missing quota projects, and disabled APIs early.
+    """
     has_assemblyai = bool(os.getenv("ASSEMBLYAI_API_KEY", "").strip())
     has_google = bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip())
     has_azure = bool(os.getenv("AZURE_VISION_ENDPOINT", "").strip()) and bool(
         os.getenv("AZURE_VISION_KEY", "").strip()
     )
 
-    # Google creds: also verify the file exists
+    # Google creds: verify the file exists
     if has_google:
         creds_path = (
             Path(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")).expanduser().resolve()
         )
         if not creds_path.exists() or not creds_path.is_file():
+            has_google = False
+
+    # Google creds: validate actual API access (catches expired tokens,
+    # missing quota project, disabled APIs, permission errors)
+    if has_google:
+        log("Tuner: validating Google Vision API access...")
+        if _ping_google_vision():
+            log("Tuner: Google Vision API OK")
+        else:
+            log("Tuner: Google Vision unavailable, falling back to tesseract")
             has_google = False
 
     transcribe = "assemblyai" if has_assemblyai else "whisper"
