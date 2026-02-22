@@ -137,12 +137,7 @@ def _tune_ocr(probe: ProbeResult) -> dict:
         ocr_scale = 1.5
 
     # Crop mode based on text density
-    if probe.avg_text_length > 500:
-        ocr_crops = "preset"
-    elif probe.avg_text_length < 100:
-        ocr_crops = "none"
-    else:
-        ocr_crops = "preset"
+    ocr_crops = "none" if probe.avg_text_length < 100 else "preset"
 
     return {
         "ocr_scale": ocr_scale,

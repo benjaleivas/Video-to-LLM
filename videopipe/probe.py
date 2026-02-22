@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .ffmpeg_utils import extract_sample_frames, extract_scene_frames
