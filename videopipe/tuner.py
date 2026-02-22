@@ -57,6 +57,17 @@ def _detect_providers() -> dict[str, str]:
     For Google Vision, goes beyond file-exists check: sends a real API ping
     to catch expired tokens, missing quota projects, and disabled APIs early.
     """
+    # Load .env if present (won't override existing env vars)
+    try:
+        from dotenv import find_dotenv, load_dotenv
+
+        dotenv_path = find_dotenv(usecwd=True)
+        if dotenv_path:
+            load_dotenv(dotenv_path)
+            log(f"Tuner: loaded .env from {dotenv_path}")
+    except ImportError:
+        pass
+
     has_assemblyai = bool(os.getenv("ASSEMBLYAI_API_KEY", "").strip())
     has_google = bool(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip())
     has_azure = bool(os.getenv("AZURE_VISION_ENDPOINT", "").strip()) and bool(
