@@ -21,6 +21,9 @@ dependencies = [
 [project.scripts]
 videopipe = "videopipe.auto:main"
 
+[tool.setuptools.packages.find]
+include = ["videopipe*"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
