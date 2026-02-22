@@ -14,7 +14,15 @@ from pathlib import Path
 from .cli import _pipeline
 from .probe import probe_video
 from .tuner import tune_parameters
-from .utils import log
+from .utils import (
+    close_logging,
+    format_duration,
+    init_logging,
+    log,
+    log_error,
+    log_section,
+    log_warning,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,27 +41,36 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = Path(args_list[1]).expanduser().resolve()
 
     if not video_path.exists():
-        log(f"ERROR: video not found: {video_path}")
+        log_error(f"Video not found: {video_path}")
         return 1
     if not video_path.is_file():
-        log(f"ERROR: not a file: {video_path}")
+        log_error(f"Not a file: {video_path}")
         return 1
 
+    # Derive run directory and initialize logging early
+    run_dir = (output_dir / video_path.stem).resolve()
+    init_logging(run_dir)
+
+    try:
+        return _run(video_path, output_dir, run_dir)
+    finally:
+        close_logging()
+
+
+def _run(video_path: Path, output_dir: Path, run_dir: Path) -> int:
     log(f"Video: {video_path}")
-    log(f"Output: {output_dir}")
-    log("")
+    log(f"Output: {run_dir}")
 
     start = time.time()
 
     # Pass 1: probe
-    log("=== Pass 1/2: Probing video ===")
+    log_section("Pass 1/2: Probing video")
     probe_result = probe_video(video_path)
     probe_elapsed = time.time() - start
-    log(f"Probe completed in {probe_elapsed:.1f}s")
-    log("")
+    log(f"Probe complete ({format_duration(probe_elapsed)})")
 
     # Tune parameters from probe
-    log("=== Auto-tuning parameters ===")
+    log_section("Auto-tuning parameters")
     pipeline_args = tune_parameters(
         probe_result,
         video_path=str(video_path),
@@ -61,25 +78,26 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if not probe_result.has_audio:
-        log(
-            "Warning: no audio stream detected — transcription will be skipped or empty"
-        )
-    log("")
+        log_warning("No audio stream detected — transcription will be skipped or empty")
 
     # Pass 2: full pipeline
-    log("=== Pass 2/2: Running pipeline ===")
+    log_section("Pass 2/2: Running pipeline")
     try:
         result = _pipeline(pipeline_args)
     except Exception as exc:
-        log(f"ERROR: {exc}")
+        log_error(str(exc))
         if os.getenv("VIDEOPIPE_DEBUG"):
             traceback.print_exc()
         else:
-            log("  Set VIDEOPIPE_DEBUG=1 for full traceback")
+            log("Set VIDEOPIPE_DEBUG=1 for full traceback")
         return 1
 
     total_elapsed = time.time() - start
+    pipeline_elapsed = total_elapsed - probe_elapsed
     log(
-        f"Total time: {total_elapsed:.1f}s (probe: {probe_elapsed:.1f}s, pipeline: {total_elapsed - probe_elapsed:.1f}s)"
+        f"Total time: {format_duration(total_elapsed)} "
+        f"(probe: {format_duration(probe_elapsed)}, "
+        f"pipeline: {format_duration(pipeline_elapsed)})"
     )
+    log(f"Log: {run_dir / 'videopipe.log'}")
     return result

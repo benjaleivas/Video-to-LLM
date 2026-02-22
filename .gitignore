@@ -38,3 +38,9 @@ local_data/
 *.egg-info/
 dist/
 build/
+
+# Claude Code workspace
+.claude/
+
+# Local launcher (machine-specific paths)
+Run Video-to-LLM.command

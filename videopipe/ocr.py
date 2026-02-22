@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from .quality import score_ocr_text
-from .utils import log
+from .utils import log_verbose, make_progress
 
 
 @dataclass
@@ -25,7 +25,9 @@ class OcrOptions:
     manual_crops: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
-def parse_manual_crops(raw_crops: Iterable[str] | None) -> list[tuple[int, int, int, int]]:
+def parse_manual_crops(
+    raw_crops: Iterable[str] | None,
+) -> list[tuple[int, int, int, int]]:
     if not raw_crops:
         return []
     parsed: list[tuple[int, int, int, int]] = []
@@ -36,14 +38,20 @@ def parse_manual_crops(raw_crops: Iterable[str] | None) -> list[tuple[int, int, 
         try:
             x1, y1, x2, y2 = (int(p) for p in parts)
         except ValueError as exc:
-            raise ValueError(f"Invalid --ocr-crop value {raw!r}. Coordinates must be integers.") from exc
+            raise ValueError(
+                f"Invalid --ocr-crop value {raw!r}. Coordinates must be integers."
+            ) from exc
         if x2 <= x1 or y2 <= y1:
-            raise ValueError(f"Invalid --ocr-crop value {raw!r}. Require x2>x1 and y2>y1.")
+            raise ValueError(
+                f"Invalid --ocr-crop value {raw!r}. Require x2>x1 and y2>y1."
+            )
         parsed.append((x1, y1, x2, y2))
     return parsed
 
 
-def _clip_box(box: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int] | None:
+def _clip_box(
+    box: tuple[int, int, int, int], width: int, height: int
+) -> tuple[int, int, int, int] | None:
     x1, y1, x2, y2 = box
     x1 = max(0, min(width - 1, x1))
     y1 = max(0, min(height - 1, y1))
@@ -60,7 +68,9 @@ def build_crop_boxes(
     crops_mode: str,
     manual_crops: list[tuple[int, int, int, int]] | None = None,
 ) -> list[tuple[str, tuple[int, int, int, int]]]:
-    boxes: list[tuple[str, tuple[int, int, int, int]]] = [("FULL", (0, 0, width, height))]
+    boxes: list[tuple[str, tuple[int, int, int, int]]] = [
+        ("FULL", (0, 0, width, height))
+    ]
     if crops_mode == "preset":
         boxes.extend(
             [
@@ -93,15 +103,21 @@ def _text_len(text: str) -> int:
     return len(compact)
 
 
-def _ocr_with_psm(image: Image.Image, lang: str, oem: int, psm: int) -> tuple[str, float | None]:
+def _ocr_with_psm(
+    image: Image.Image, lang: str, oem: int, psm: int
+) -> tuple[str, float | None]:
     try:
         import pytesseract
     except Exception as exc:  # pragma: no cover - import guard
-        raise RuntimeError("pytesseract is not installed. Run: pip install -r requirements.txt") from exc
+        raise RuntimeError(
+            "pytesseract is not installed. Run: pip install -r requirements.txt"
+        ) from exc
 
     config = f"--oem {oem} --psm {psm}"
     text = pytesseract.image_to_string(image, lang=lang, config=config).strip()
-    data = pytesseract.image_to_data(image, lang=lang, config=config, output_type=pytesseract.Output.DICT)
+    data = pytesseract.image_to_data(
+        image, lang=lang, config=config, output_type=pytesseract.Output.DICT
+    )
     confs: list[float] = []
     for conf_str in data.get("conf", []):
         try:
@@ -125,7 +141,9 @@ def _ocr_best_pass(
     best = (primary_text, primary_conf, psm)
     if second_psm is None or second_psm == psm:
         return best
-    secondary_text, secondary_conf = _ocr_with_psm(image, lang=lang, oem=oem, psm=second_psm)
+    secondary_text, secondary_conf = _ocr_with_psm(
+        image, lang=lang, oem=oem, psm=second_psm
+    )
     if _text_len(secondary_text) > _text_len(primary_text):
         return secondary_text, secondary_conf, second_psm
     return best
@@ -143,7 +161,9 @@ def _ocr_worker(task: dict) -> dict:
 
     with Image.open(frame_path) as img:
         image = img.convert("L")
-        crops = build_crop_boxes(image.width, image.height, crops_mode=crops_mode, manual_crops=manual_crops)
+        crops = build_crop_boxes(
+            image.width, image.height, crops_mode=crops_mode, manual_crops=manual_crops
+        )
 
         crop_records: list[dict] = []
         for crop_name, box in crops:
@@ -165,10 +185,16 @@ def _ocr_worker(task: dict) -> dict:
                 }
             )
 
-    parts = [f"[{record['name']}]\n{record['text']}" for record in crop_records if record["text"]]
+    parts = [
+        f"[{record['name']}]\n{record['text']}"
+        for record in crop_records
+        if record["text"]
+    ]
     full_text = "\n\n".join(parts).strip()
 
-    valid_confs = [record["avg_conf"] for record in crop_records if record["avg_conf"] is not None]
+    valid_confs = [
+        record["avg_conf"] for record in crop_records if record["avg_conf"] is not None
+    ]
     avg_conf = round(sum(valid_confs) / len(valid_confs), 2) if valid_confs else None
     frame_quality = score_ocr_text(full_text, avg_conf)
 
@@ -191,7 +217,9 @@ def _ocr_worker(task: dict) -> dict:
         "quality_flags": frame_quality["quality_flags"],
         "quality_metrics": frame_quality["metrics"],
         "fallback_used": False,
-        "provider_candidates": [{"provider": "tesseract", "quality_score": frame_quality["quality_score"]}],
+        "provider_candidates": [
+            {"provider": "tesseract", "quality_score": frame_quality["quality_score"]}
+        ],
     }
 
 
@@ -249,7 +277,9 @@ def dedupe_frames(
                 time_delta = ts - float(duplicate_of["timestamp"])
                 if time_delta <= transition_gap_seconds:
                     try:
-                        delta_ratio = _image_delta_ratio(processed_path, Path(duplicate_of["processed_path"]))
+                        delta_ratio = _image_delta_ratio(
+                            processed_path, Path(duplicate_of["processed_path"])
+                        )
                     except Exception:
                         delta_ratio = 0.0
                     if delta_ratio >= transition_delta_threshold:
@@ -269,7 +299,11 @@ def dedupe_frames(
                                 "processed_path": entry["processed_path"],
                             }
                         )
-                        recent_kept = [prev for prev in recent_kept if ts - prev["timestamp"] <= time_gap_sec]
+                        recent_kept = [
+                            prev
+                            for prev in recent_kept
+                            if ts - prev["timestamp"] <= time_gap_sec
+                        ]
                         continue
             dropped.append(
                 {
@@ -284,13 +318,23 @@ def dedupe_frames(
 
         kept_entry = {**entry, "phash": str(current_hash)}
         kept.append(kept_entry)
-        recent_kept.append({"timestamp": ts, "hash": current_hash, "processed_path": entry["processed_path"]})
-        recent_kept = [prev for prev in recent_kept if ts - prev["timestamp"] <= time_gap_sec]
+        recent_kept.append(
+            {
+                "timestamp": ts,
+                "hash": current_hash,
+                "processed_path": entry["processed_path"],
+            }
+        )
+        recent_kept = [
+            prev for prev in recent_kept if ts - prev["timestamp"] <= time_gap_sec
+        ]
 
     return kept, dropped
 
 
-def ocr_frames(frame_entries: list[dict], options: OcrOptions, workers: int = 4) -> list[dict]:
+def ocr_frames(
+    frame_entries: list[dict], options: OcrOptions, workers: int = 4
+) -> list[dict]:
     if not frame_entries:
         return []
 
@@ -310,21 +354,24 @@ def ocr_frames(frame_entries: list[dict], options: OcrOptions, workers: int = 4)
     ]
 
     total = len(tasks)
-    log(f"Running OCR on {total} frames with {max_workers} worker(s).")
-
-    if max_workers == 1:
-        out: list[dict] = []
-        for i, task in enumerate(tasks, start=1):
-            out.append(_ocr_worker(task))
-            if i % 5 == 0 or i == total:
-                log(f"OCR progress: {i}/{total}")
-        return sorted(out, key=lambda item: item["timestamp"])
+    log_verbose(
+        f"Running Tesseract OCR on {total} frames with {max_workers} worker(s)."
+    )
 
     out: list[dict] = []
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(_ocr_worker, task) for task in tasks]
-        for i, future in enumerate(as_completed(futures), start=1):
-            out.append(future.result())
-            if i % 5 == 0 or i == total:
-                log(f"OCR progress: {i}/{total}")
+
+    with make_progress("OCR (Tesseract)") as progress:
+        bar = progress.add_task("ocr", total=total)
+
+        if max_workers == 1:
+            for task in tasks:
+                out.append(_ocr_worker(task))
+                progress.advance(bar)
+        else:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_ocr_worker, task) for task in tasks]
+                for future in as_completed(futures):
+                    out.append(future.result())
+                    progress.advance(bar)
+
     return sorted(out, key=lambda item: item["timestamp"])
